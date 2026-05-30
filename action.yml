@@ -1,0 +1,57 @@
+name: QuickChain Scan
+description: Start a QuickChain supply-chain scan from GitHub Actions.
+author: IronRidgeCyber
+
+inputs:
+  api-key:
+    description: QuickChain CI token generated from the QuickChain web app.
+    required: true
+  api-url:
+    description: QuickChain web app URL.
+    required: false
+    default: https://ironridgecyber.com
+  project-id:
+    description: QuickChain project ID. If omitted, QuickChain tries to match the GitHub repository.
+    required: false
+  fail-on:
+    description: Severity threshold that fails the workflow. Use none, any, low, medium, high, or critical.
+    required: false
+    default: critical
+  wait:
+    description: Wait for the QuickChain scan to finish before completing the step.
+    required: false
+    default: "true"
+  timeout-minutes:
+    description: Maximum time to wait for a scan.
+    required: false
+    default: "35"
+  poll-interval-seconds:
+    description: Seconds between status checks while waiting.
+    required: false
+    default: "15"
+
+outputs:
+  scan-id:
+    description: QuickChain scan ID.
+  dashboard-url:
+    description: QuickChain dashboard URL for this scan.
+  status:
+    description: Final or accepted scan status.
+  critical-count:
+    description: Critical vulnerability count.
+  high-count:
+    description: High vulnerability count.
+  medium-count:
+    description: Medium vulnerability count.
+  low-count:
+    description: Low vulnerability count.
+  total-count:
+    description: Total vulnerability count.
+
+runs:
+  using: node20
+  main: dist/index.js
+
+branding:
+  icon: shield
+  color: green
