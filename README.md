@@ -38,7 +38,14 @@ jobs:
           api-key: ${{ secrets.QUICKCHAIN_API_KEY }}
           project-id: ${{ vars.QUICKCHAIN_PROJECT_ID }}
           fail-on: critical
+          fail-on-reachable-only: false
           wait: true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quickchain-results
+          path: QuickChainResults/
 ```
 
 ## Inputs
@@ -49,9 +56,31 @@ jobs:
 | `project-id` | No | | QuickChain project ID. Recommended for reliable project matching. |
 | `api-url` | No | `https://ironridgecyber.com` | QuickChain web app URL. Override only for dev or tunnel testing. |
 | `fail-on` | No | `critical` | Severity threshold that fails the workflow. Use `none`, `any`, `low`, `medium`, `high`, or `critical`. |
+| `fail-on-reachable-only` | No | `false` | When `true`, `fail-on` only evaluates vulnerabilities with potential runtime reachability. |
 | `wait` | No | `true` | Wait for the QuickChain scan to finish before completing the step. |
+| `write-artifacts` | No | `true` | Write SBOM, VEX, and remediation PDF files to the output directory when the scan completes. |
+| `output-directory` | No | `QuickChainResults` | Directory where QuickChain result files are written. Existing contents are replaced. |
 | `timeout-minutes` | No | `35` | Maximum time to wait for a scan. |
 | `poll-interval-seconds` | No | `15` | Seconds between status checks while waiting. |
+
+## Pass/Fail Behavior
+
+When `wait` is `true`, the action fails if QuickChain finds any vulnerability at or above the `fail-on` severity. For example, `fail-on: high` fails on high or critical findings. `fail-on: none` never fails because of findings, and `fail-on: any` fails on any finding.
+
+Set `fail-on-reachable-only: true` to only fail on findings with potential runtime reachability. Non-reachable findings are still included in the SBOM/VEX evidence trail, but they do not fail the workflow in that mode.
+
+## Result Files
+
+When `write-artifacts` is `true` and the scan completes, the action replaces the output directory and writes:
+
+```text
+QuickChainResults/
+  sbom.json
+  openvex.json
+  remediation.pdf
+```
+
+GitHub-hosted runners discard workspace files after the job. Add `actions/upload-artifact` if you want to retain the files from the run.
 
 ## Local Tunnel Testing
 
@@ -67,8 +96,6 @@ GitHub-hosted runners cannot reach `localhost` on your machine. To test a local 
           wait: true
 ```
 
-Set `QUICKCHAIN_API_URL` to your current HTTPS tunnel URL, for example a `trycloudflare.com` URL.
-
 ## Outputs
 
 | Output | Description |
@@ -81,6 +108,14 @@ Set `QUICKCHAIN_API_URL` to your current HTTPS tunnel URL, for example a `tryclo
 | `medium-count` | Medium vulnerability count. |
 | `low-count` | Low vulnerability count. |
 | `total-count` | Total vulnerability count. |
+| `critical-reachable-count` | Critical vulnerabilities with potential runtime reachability. |
+| `high-reachable-count` | High vulnerabilities with potential runtime reachability. |
+| `medium-reachable-count` | Medium vulnerabilities with potential runtime reachability. |
+| `low-reachable-count` | Low vulnerabilities with potential runtime reachability. |
+| `reachable-count` | Total vulnerabilities with potential runtime reachability. |
+| `sbom-available` | Whether QuickChain produced an SBOM artifact for this scan. |
+| `vex-available` | Whether QuickChain produced a VEX artifact for this scan. |
+| `results-directory` | Directory containing QuickChain result files. |
 
 ## License
 

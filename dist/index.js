@@ -1,7 +1,9 @@
 const fs = require('fs');
+const path = require('path');
 
 const TERMINAL_STATUSES = new Set(['completed', 'failed']);
 const SEVERITY_ORDER = ['low', 'medium', 'high', 'critical'];
+const SUMMARY_SEVERITIES = ['critical', 'high', 'medium', 'low'];
 
 function getInput(name, options = {}) {
     const envName = `INPUT_${name.replace(/ /g, '_').toUpperCase()}`;
@@ -56,6 +58,16 @@ function writeSummary(markdown) {
     }
 }
 
+function formatAvailability(value) {
+    return value ? 'Yes' : 'No';
+}
+
+function formatSummaryText(value, maxLength = 1800) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
+}
+
 async function requestJson(url, options) {
     const response = await fetch(url, options);
     const text = await response.text();
@@ -77,6 +89,29 @@ async function requestJson(url, options) {
     }
 
     return payload;
+}
+
+async function requestBuffer(url, options) {
+    const response = await fetch(url, options);
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    if (!response.ok) {
+        let message = `QuickChain request failed with ${response.status}`;
+        const text = buffer.toString('utf8');
+        if (text) {
+            try {
+                message = JSON.parse(text).error || message;
+            } catch {
+                message = text;
+            }
+        }
+        const error = new Error(message);
+        error.status = response.status;
+        throw error;
+    }
+
+    return buffer;
 }
 
 function getGitHubContext() {
@@ -115,6 +150,51 @@ async function getScanStatus({ apiUrl, apiKey, scanId }) {
             Authorization: `Bearer ${apiKey}`,
         },
     });
+}
+
+async function downloadScanArtifact({ apiUrl, apiKey, scanId, artifactPath }) {
+    return requestBuffer(`${apiUrl}/api/ci/scans/${encodeURIComponent(scanId)}/${artifactPath}`, {
+        method: 'GET',
+        headers: {
+            Authorization: `Bearer ${apiKey}`,
+        },
+    });
+}
+
+function prepareOutputDirectory(outputDirectory) {
+    const workspace = process.cwd();
+    const resolved = path.resolve(workspace, outputDirectory || 'QuickChainResults');
+    const relative = path.relative(workspace, resolved);
+
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+        throw new Error('output-directory must be a child directory inside the checked-out repository.');
+    }
+
+    fs.rmSync(resolved, { recursive: true, force: true });
+    fs.mkdirSync(resolved, { recursive: true });
+    return resolved;
+}
+
+async function writeScanArtifacts({ apiUrl, apiKey, scanId, outputDirectory }) {
+    const resolvedOutputDirectory = prepareOutputDirectory(outputDirectory);
+
+    const artifacts = [
+        { artifactPath: 'sbom', filename: 'sbom.json' },
+        { artifactPath: 'vex', filename: 'openvex.json' },
+        { artifactPath: 'remediation.pdf', filename: 'remediation.pdf' },
+    ];
+
+    for (const artifact of artifacts) {
+        const buffer = await downloadScanArtifact({
+            apiUrl,
+            apiKey,
+            scanId,
+            artifactPath: artifact.artifactPath,
+        });
+        const filePath = path.join(resolvedOutputDirectory, artifact.filename);
+        fs.writeFileSync(filePath, buffer);
+        console.log(`QuickChain wrote ${path.relative(process.cwd(), filePath)}`);
+    }
 }
 
 async function waitForScan({ apiUrl, apiKey, scanId, timeoutMinutes, pollIntervalSeconds }) {
@@ -158,6 +238,7 @@ function shouldFailForFindings(findings, failOn) {
 
 function writeOutputs(result) {
     const counts = result.findings?.severityCounts || {};
+    const reachableCounts = result.findings?.reachableSeverityCounts || {};
     setOutput('scan-id', result.scanId || '');
     setOutput('dashboard-url', result.dashboardUrl || '');
     setOutput('status', result.status || '');
@@ -166,11 +247,26 @@ function writeOutputs(result) {
     setOutput('medium-count', counts.medium || 0);
     setOutput('low-count', counts.low || 0);
     setOutput('total-count', result.findings?.total || 0);
+    setOutput('critical-reachable-count', reachableCounts.critical || 0);
+    setOutput('high-reachable-count', reachableCounts.high || 0);
+    setOutput('medium-reachable-count', reachableCounts.medium || 0);
+    setOutput('low-reachable-count', reachableCounts.low || 0);
+    setOutput('reachable-count', result.findings?.reachable || 0);
+    setOutput('sbom-available', result.artifacts?.sbomAvailable ? 'true' : 'false');
+    setOutput('vex-available', result.artifacts?.vexAvailable ? 'true' : 'false');
+    setOutput('results-directory', result.resultsDirectory || '');
 }
 
 function writeResultSummary(result) {
     const counts = result.findings?.severityCounts || {};
+    const reachableCounts = result.findings?.reachableSeverityCounts || {};
     const dashboardLine = result.dashboardUrl ? `\n\n[Open QuickChain dashboard](${result.dashboardUrl})` : '';
+    const remediationSummary = formatSummaryText(result.aiSummary);
+    const resultsLine = result.resultsDirectory ? `\n\nResults directory: \`${result.resultsDirectory}\`` : '';
+    const severityRows = SUMMARY_SEVERITIES.map((severity) => {
+        const label = severity.charAt(0).toUpperCase() + severity.slice(1);
+        return `| ${label} | ${counts[severity] || 0} | ${reachableCounts[severity] || 0} |`;
+    });
 
     writeSummary([
         '## QuickChain Scan',
@@ -178,15 +274,29 @@ function writeResultSummary(result) {
         `Status: ${result.status || 'accepted'}`,
         `Scan ID: ${result.scanId || 'unavailable'}`,
         '',
-        '| Severity | Count |',
-        '| --- | ---: |',
-        `| Critical | ${counts.critical || 0} |`,
-        `| High | ${counts.high || 0} |`,
-        `| Medium | ${counts.medium || 0} |`,
-        `| Low | ${counts.low || 0} |`,
-        `| Total | ${result.findings?.total || 0} |`,
+        '| Severity | Count | Potentially Reachable |',
+        '| --- | ---: | ---: |',
+        ...severityRows,
+        `| Total | ${result.findings?.total || 0} | ${result.findings?.reachable || 0} |`,
+        '',
+        `SBOM available: ${formatAvailability(result.artifacts?.sbomAvailable)}`,
+        `VEX available: ${formatAvailability(result.artifacts?.vexAvailable)}`,
+        ...(remediationSummary ? ['', '### Remediation Summary', '', remediationSummary] : []),
+        resultsLine,
         dashboardLine,
     ].join('\n'));
+}
+
+function shouldFailForFindingsWithReachability(findings, failOn, reachableOnly) {
+    if (!reachableOnly) {
+        return shouldFailForFindings(findings, failOn);
+    }
+
+    return shouldFailForFindings({
+        ...findings,
+        total: findings?.reachable || 0,
+        severityCounts: findings?.reachableSeverityCounts || {},
+    }, failOn);
 }
 
 async function main() {
@@ -194,7 +304,10 @@ async function main() {
     const apiUrl = normalizeApiUrl(getInput('api-url', { defaultValue: 'https://ironridgecyber.com' }));
     const projectId = getInput('project-id');
     const failOn = getInput('fail-on', { defaultValue: 'critical' });
+    const failOnReachableOnly = parseBoolean(getInput('fail-on-reachable-only', { defaultValue: 'false' }));
     const wait = parseBoolean(getInput('wait', { defaultValue: 'true' }));
+    const writeArtifacts = parseBoolean(getInput('write-artifacts', { defaultValue: 'true' }));
+    const outputDirectory = getInput('output-directory', { defaultValue: 'QuickChainResults' }) || 'QuickChainResults';
     const timeoutMinutes = parsePositiveInteger(getInput('timeout-minutes', { defaultValue: '35' }), 35);
     const pollIntervalSeconds = parsePositiveInteger(getInput('poll-interval-seconds', { defaultValue: '15' }), 15);
 
@@ -209,7 +322,9 @@ async function main() {
         status: accepted.status || 'accepted',
         findings: {
             total: 0,
+            reachable: 0,
             severityCounts: {},
+            reachableSeverityCounts: {},
         },
     };
 
@@ -223,6 +338,18 @@ async function main() {
         });
     }
 
+    if (wait && writeArtifacts && String(result.status || '').toLowerCase() === 'completed') {
+        await writeScanArtifacts({
+            apiUrl,
+            apiKey,
+            scanId: accepted.scanId,
+            outputDirectory,
+        });
+        result.resultsDirectory = outputDirectory;
+    } else if (writeArtifacts && !wait) {
+        console.log('QuickChain artifact download skipped because wait is false.');
+    }
+
     writeOutputs(result);
     writeResultSummary(result);
 
@@ -230,10 +357,13 @@ async function main() {
         throw new Error(`QuickChain scan ${result.scanId} failed.`);
     }
 
-    if (wait && shouldFailForFindings(result.findings, failOn)) {
-        const counts = result.findings?.severityCounts || {};
+    if (wait && shouldFailForFindingsWithReachability(result.findings, failOn, failOnReachableOnly)) {
+        const counts = failOnReachableOnly
+            ? result.findings?.reachableSeverityCounts || {}
+            : result.findings?.severityCounts || {};
+        const scope = failOnReachableOnly ? 'potentially reachable vulnerabilities' : 'vulnerabilities';
         throw new Error(
-            `QuickChain found vulnerabilities at or above '${failOn}' severity ` +
+            `QuickChain found ${scope} at or above '${failOn}' severity ` +
             `(critical: ${counts.critical || 0}, high: ${counts.high || 0}, medium: ${counts.medium || 0}, low: ${counts.low || 0}).`
         );
     }

@@ -17,10 +17,22 @@ inputs:
     description: Severity threshold that fails the workflow. Use none, any, low, medium, high, or critical.
     required: false
     default: critical
+  fail-on-reachable-only:
+    description: When true, fail-on only evaluates vulnerabilities with potential runtime reachability.
+    required: false
+    default: "false"
   wait:
     description: Wait for the QuickChain scan to finish before completing the step.
     required: false
     default: "true"
+  write-artifacts:
+    description: Write SBOM, VEX, and remediation PDF files to the output directory when the scan completes.
+    required: false
+    default: "true"
+  output-directory:
+    description: Directory where QuickChain result files are written. Existing contents are replaced.
+    required: false
+    default: QuickChainResults
   timeout-minutes:
     description: Maximum time to wait for a scan.
     required: false
@@ -47,6 +59,22 @@ outputs:
     description: Low vulnerability count.
   total-count:
     description: Total vulnerability count.
+  critical-reachable-count:
+    description: Critical vulnerabilities with potential runtime reachability.
+  high-reachable-count:
+    description: High vulnerabilities with potential runtime reachability.
+  medium-reachable-count:
+    description: Medium vulnerabilities with potential runtime reachability.
+  low-reachable-count:
+    description: Low vulnerabilities with potential runtime reachability.
+  reachable-count:
+    description: Total vulnerabilities with potential runtime reachability.
+  sbom-available:
+    description: Whether QuickChain produced an SBOM artifact for this scan.
+  vex-available:
+    description: Whether QuickChain produced a VEX artifact for this scan.
+  results-directory:
+    description: Directory containing QuickChain result files.
 
 runs:
   using: node20
